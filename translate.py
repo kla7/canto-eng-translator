@@ -36,10 +36,9 @@ with st.sidebar:
         index=1
     )
 
-api_key_can = os.getenv("OPENAI_API_KEY_CAN")
-api_key_en = os.getenv("OPENAI_API_KEY_EN")
+api_key = os.getenv("OPENAI_API_KEY_TRANSLATE")
 
-if not api_key_can or not api_key_en:
+if not api_key:
     st.error("Missing OpenAI API key.")
     st.stop()
 
@@ -47,13 +46,29 @@ st.title("Bilingual Chat Translator")
 
 system_message = {
     "role": "system",
-    "content": f"You are a bilingual conversation assistant. User 1 prefers {user_1_language}, and User 2 prefers "
+    "content": f"You are a bilingual conversation translator. User 1 prefers {user_1_language}, and User 2 prefers "
                f"{user_2_language}. When a user sends a message in either Cantonese, English, or a mix of both, "
-               f"translate it into the language the other user prefers. Maintain meaning, structure, and punctuation "
-               f"as closely as possible. Do not use em dashes or semicolons if the original text only uses commas. "
-               f"Do not assume the message is always in one language, detect it dynamically. IMPORTANT: If "
-               f" into Cantonese, use written Cantonese with colloquial vocabulary, not Mandarin (Standard Chinese). "
-               f"Use words and sentence structures common in Hong Kong written Cantonese."
+               f"translate it fully into the language the other user prefers. Maintain meaning, structure, and "
+               f"punctuation as closely as possible. Do not use em dashes or semicolons if the original text only "
+               f"uses commas. Do not assume the message is always in one language, detect it dynamically.\n\n "
+               f"**IMPORTANT: If translating into Cantonese, you must use written Cantonese with colloquial "
+               f"vocabulary.** It is extremely important that you do not use Mandarin or Standard Chinese. Use words "
+               f"and sentence structures common in Hong Kong written Cantonese. For example:\n "
+               f"- Use '咗' for past tense instead of other forms.\n "
+               f"- Use '佢哋' for 'they' instead of '他们'.\n "
+               f"- Use '冇' for negation instead of '没有'.\n "
+               f"- Use '喺' for prepositions like 'at'/'in'/'on' instead of '在'."
+}
+
+cantonese_system_message = {
+    "role": "system",
+    "content": "Remember, you must ensure that text containing exclusively English or a mix of both English and "
+               "Cantonese must be translated fully into Cantonese using written Cantonese, not Mandarin or Standard "
+               "Chinese. Use colloquial vocabulary and sentence structures common in Hong Kong written Cantonese. "
+               "If the original text already contains Chinese characters, please try to only change the English text "
+               "and maintain the original Cantonese text in terms of wording and structure, even if it is not "
+               "colloquial Cantonese but rather is Standard Chinese. "
+               "**However, there must be no English text left in the output!**"
 }
 
 if "messages" not in st.session_state:
@@ -89,11 +104,9 @@ if user_input:
     if active_user == "User 1":
         source_language = user_1_language
         target_language = user_2_language
-        api_key = api_key_can if source_language == "Cantonese" else api_key_en
     else:
         source_language = user_2_language
         target_language = user_1_language
-        api_key = api_key_can if source_language == "Cantonese" else api_key_en
 
     client = OpenAI(api_key=api_key)
 
@@ -101,15 +114,19 @@ if user_input:
     st.session_state["messages"].append(user_message)
     st.chat_message("user").write(user_message["content"])
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            system_message,
-            {
+    messages = []
+
+    if target_language == "Cantonese":
+        messages.append(cantonese_system_message)
+
+    messages.append({
                 "role": "user",
                 "content": f"Translate the following message from {source_language} to {target_language}: {user_input}"
-            }
-        ]
+            })
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages
     )
 
     translated_text = response.choices[0].message.content.strip()
