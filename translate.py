@@ -1,8 +1,9 @@
 import streamlit as st
 import whisper
 import torch
-import tempfile
 import os
+import wave
+import pyaudio
 from openai import OpenAI
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -10,6 +11,12 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 torch.classes.__path__ = []
 
 Base = declarative_base()
+
+# audio recording params
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 16000
+CHUNK = 1024
 
 
 class Message(Base):
@@ -56,24 +63,70 @@ with st.sidebar:
     )
 
 
-def transcribe_and_translate(uploaded_file, source_language, target_language):
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
-        tmp.write(uploaded_file.read())
-        tmp_path = tmp.name
+def record_audio(filename: str = 'output.wav', record_seconds: int = 10) -> str:
+    """
+    Record audio using PyAudio.
+    :param filename: A string corresponding to the name of the output audio file.
+    :param record_seconds: An integer corresponding to the duration of the recording in seconds.
+    :return: The name of the audio file.
+    """
+    audio = pyaudio.PyAudio()
 
+    stream = audio.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=RATE,
+        input=True,
+        frames_per_buffer=CHUNK
+    )
+
+    frames = []
+
+    timer_placeholder = st.empty()
+
+    for i in range(0, int(RATE / CHUNK * record_seconds)):
+        data = stream.read(CHUNK)
+        frames.append(data)
+
+        elapsed = i / (RATE / CHUNK)
+        timer_placeholder.markdown(f'{elapsed:.1f}s / {record_seconds:.1f}s')
+
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    timer_placeholder.empty()
+
+    wf = wave.open(filename, 'wb')
+    wf.setnchannels(CHANNELS)
+    wf.setsampwidth(audio.get_sample_size(FORMAT))
+    wf.setframerate(RATE)
+    wf.writeframes(b''.join(frames))
+    wf.close()
+
+    return filename
+
+
+def transcribe_and_translate(filename: str, source_language: str, target_language: str) -> tuple[str, str]:
+    """
+    Transcribe the provided audio file using Whisper and translate the corresponding transcription from the
+    source language to the target language using GPT-4o-mini.
+    :param filename: A string corresponding to the name of the input audio file.
+    :param source_language: A string corresponding to the source language from which the text is to be translated.
+    :param target_language: A string corresponding to the target language into which the text is to be translated.
+    :return: A tuple containing the raw text output from Whisper and the translated text output from GPT-4o-mini.
+    """
     asr_model = whisper.load_model('medium').to(device)
 
     transcription = asr_model.transcribe(
-        audio=tmp_path,
+        audio=filename,
         language='zh',
         task='transcribe',
-        initial_prompt='我啱啱食完lunch，好飽啊。你今晚有冇興趣去party？。'
+        initial_prompt='我啱啱食完lunch，好飽啊。你今晚有冇興趣去party？We can go together.'
     )
 
     raw_text = transcription['text']
     print(raw_text)
-
-    os.remove(tmp_path)
 
     del asr_model
     torch.cuda.empty_cache()
@@ -119,33 +172,37 @@ def transcribe_and_translate(uploaded_file, source_language, target_language):
 
 st.markdown('---')
 
-for msg in (st.session_state['messages']):
-    align = 'left' if msg['user'] == "User 1" else 'right'
-    bubble_color = '#0492d4' if msg['user'] == 'User 1' else '#09bd0f'
+with st.container(height=400):
+    for msg in (st.session_state['messages']):
+        align = 'left' if msg['user'] == "User 1" else 'right'
+        bubble_color = '#0492d4' if msg['user'] == 'User 1' else '#09bd0f'
 
-    st.markdown(
-        f"""
-        <div style='text-align: {align}; margin-bottom: 1rem;'>
-            <div style='display: inline-block; background-color: {bubble_color}; padding: 10px 15px;
-            border-radius: 15px; max-width: 80%; text-align: left;'>
-                {msg['raw_text']}<br><br>
-                <em>{msg['translated_text']}</em>
+        st.markdown(
+            f"""
+            <div style='text-align: {align}; margin-bottom: 1rem;'>
+                <div style='display: inline-block; background-color: {bubble_color}; padding: 10px 15px;
+                border-radius: 15px; max-width: 80%; text-align: left;'>
+                    {msg['raw_text']}<br><br>
+                    <em>{msg['translated_text']}</em>
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+            """,
+            unsafe_allow_html=True
+        )
 
 st.markdown('---')
-st.subheader('New Message 新信息')
+st.subheader('New Message 新信息', anchor='new-message')
 
-
-left_col, right_col = st.columns(2)
+left_col, right_col = st.columns(2, border=True)
 
 with left_col:
-    audio_file_1 = st.file_uploader('User 1 Audio | 用戶1的音頻', type=['.wav'], key='uploader1')
-    if st.button(label='Translate 翻譯', key='translate1') and audio_file_1:
-        raw, translated = transcribe_and_translate(audio_file_1, user_1_language, user_2_language)
+    st.markdown('#### User 1 | 用戶1')
+    st.markdown(f'{user_1_language}')
+    if st.button(label='🎙️', key='record1', help='Start recording | 開始錄音', use_container_width=True):
+        with st.spinner('Recording... 正在錄音...'):
+            wav_path = record_audio()
+        with st.spinner('Translating... 正在翻譯...'):
+            raw, translated = transcribe_and_translate(wav_path, user_1_language, user_2_language)
         message = {'user': 'User 1', 'raw_text': raw, 'translated_text': translated}
         st.session_state['messages'].append(message)
         session.add(Message(
@@ -156,12 +213,17 @@ with left_col:
             target_language=user_2_language
         ))
         session.commit()
+        os.remove(wav_path)
         st.rerun()
 
 with right_col:
-    audio_file_2 = st.file_uploader('User 2 Audio | 用戶2的音頻', type=['.wav'], key='uploader2')
-    if st.button(label='Translate 翻譯', key='translate2') and audio_file_2:
-        raw, translated = transcribe_and_translate(audio_file_2, user_2_language, user_1_language)
+    st.markdown('#### User 2 | 用戶2')
+    st.markdown(f'{user_2_language}')
+    if st.button('🎙️', key='record2', help='Start recording | 開始錄音', use_container_width=True):
+        with st.spinner('Recording... 正在錄音...'):
+            wav_path = record_audio()
+        with st.spinner('Translating... 正在翻譯...'):
+            raw, translated = transcribe_and_translate(wav_path, user_2_language, user_1_language)
         message = {'user': 'User 2', 'raw_text': raw, 'translated_text': translated}
         st.session_state['messages'].append(message)
         session.add(Message(
@@ -172,6 +234,7 @@ with right_col:
             target_language=user_1_language
         ))
         session.commit()
+        os.remove(wav_path)
         st.rerun()
 
 st.markdown('---')
