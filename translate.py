@@ -4,6 +4,7 @@ import torch
 import os
 import wave
 import pyaudio
+import tempfile
 from openai import OpenAI
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -39,6 +40,33 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY_TRANSLATE"))
 
+script_map = {
+    'Simplified 简体字':
+        {
+            'title': '粤语英文翻译机',
+            'lang': '语言',
+            'cantonese': '粤语',
+            'prompt': '我啱啱食完lunch，好饱啊。你今晚有冇兴趣去party？We can go together.',
+            'start': '开始',
+            'record': '录音',
+            'translate': '翻译',
+            'audio': '音频',
+            'enter': '输入'
+        },
+    'Traditional 繁體字':
+        {
+            'title': '粵語英文翻譯機',
+            'lang': '語言',
+            'cantonese': '粵語',
+            'prompt': '我啱啱食完lunch，好飽啊。你今晚有冇興趣去party？We can go together.',
+            'start': '開始',
+            'record': '錄音',
+            'translate': '翻譯',
+            'audio': '音頻',
+            'enter': '輸入'
+        }
+}
+
 if 'messages' not in st.session_state:
     rows = session.query(Message).all()
     st.session_state['messages'] = [
@@ -47,20 +75,23 @@ if 'messages' not in st.session_state:
 
 st.set_page_config(page_title="Cantonese-English Translator", page_icon='🌐')
 
-st.title('🌐 Cantonese-English Translator | 粵語英文翻譯機', anchor='translator')
-
 with st.sidebar:
+    options = ['Simplified 简体字', 'Traditional 繁體字']
+    script = st.pills('Script 简繁转换 / 簡繁轉換', options, default=options[0])
+
     user_1_language = st.selectbox(
-        label="User 1's Language | 用戶1的語言",
-        options=["Cantonese 粵語", "English 英文"],
+        label=f"User 1's Language | 用戶1的{script_map[script]['lang']}",
+        options=[f"Cantonese {script_map[script]['cantonese']}", "English 英文"],
         index=0
     )
 
     user_2_language = st.selectbox(
-        label="User 2's Language | 用戶2的語言",
-        options=["Cantonese 粵語", "English 英文"],
+        label=f"User 2's Language | 用戶2的{script_map[script]['lang']}",
+        options=[f"Cantonese {script_map[script]['cantonese']}", "English 英文"],
         index=1
     )
+
+st.title(f'🌐 Cantonese-English Translator | {script_map[script]["title"]}', anchor='translator')
 
 
 def record_audio(filename: str = 'output.wav', record_seconds: int = 10) -> str:
@@ -107,29 +138,37 @@ def record_audio(filename: str = 'output.wav', record_seconds: int = 10) -> str:
     return filename
 
 
-def transcribe_and_translate(filename: str, source_language: str, target_language: str) -> tuple[str, str]:
+def transcribe_and_translate(input_str: str, source_language: str, target_language: str, mode: str) -> tuple[str, str]:
     """
     Transcribe the provided audio file using Whisper and translate the corresponding transcription from the
     source language to the target language using GPT-4o-mini.
-    :param filename: A string corresponding to the name of the input audio file.
+    :param input_str: If transcribing, a string corresponding to the name of the input audio file.
+    If translating, the input string.
     :param source_language: A string corresponding to the source language from which the text is to be translated.
     :param target_language: A string corresponding to the target language into which the text is to be translated.
+    :param mode: A string corresponding to the mode in which the input should be handled: 'transcribe' or 'translate'.
     :return: A tuple containing the raw text output from Whisper and the translated text output from GPT-4o-mini.
     """
-    asr_model = whisper.load_model('medium').to(device)
+    if mode == 'transcribe':
+        asr_model = whisper.load_model('medium').to(device)
 
-    transcription = asr_model.transcribe(
-        audio=filename,
-        language='zh',
-        task='transcribe',
-        initial_prompt='我啱啱食完lunch，好飽啊。你今晚有冇興趣去party？We can go together.'
-    )
+        print('prompt', script_map[script]['prompt'])
 
-    raw_text = transcription['text']
-    print(raw_text)
+        transcription = asr_model.transcribe(
+            audio=input_str,
+            language='zh',
+            task='transcribe',
+            initial_prompt=script_map[script]['prompt']
+        )
 
-    del asr_model
-    torch.cuda.empty_cache()
+        raw_text = transcription['text']
+        print(raw_text)
+
+        del asr_model
+        torch.cuda.empty_cache()
+
+    else:
+        raw_text = input_str
 
     system_prompt = {
         "role": "system",
@@ -193,49 +232,152 @@ with st.container(height=400):
 st.markdown('---')
 st.subheader('New Message 新信息', anchor='new-message')
 
-left_col, right_col = st.columns(2, border=True)
+tab1, tab2, tab3 = st.tabs([
+    f'Speech {script_map[script]["record"]}',
+    f'File {script_map[script]["audio"]}',
+    'Text 打字'
+])
 
-with left_col:
-    st.markdown('#### User 1 | 用戶1')
-    st.markdown(f'{user_1_language}')
-    if st.button(label='🎙️', key='record1', help='Start recording | 開始錄音', use_container_width=True):
-        with st.spinner('Recording... 正在錄音...'):
-            wav_path = record_audio()
-        with st.spinner('Translating... 正在翻譯...'):
-            raw, translated = transcribe_and_translate(wav_path, user_1_language, user_2_language)
-        message = {'user': 'User 1', 'raw_text': raw, 'translated_text': translated}
-        st.session_state['messages'].append(message)
-        session.add(Message(
-            user='User 1',
-            raw_text=raw,
-            translated_text=translated,
-            source_language=user_1_language,
-            target_language=user_2_language
-        ))
-        session.commit()
-        os.remove(wav_path)
-        st.rerun()
+with tab1:
+    left_col, right_col = st.columns(2, border=True)
 
-with right_col:
-    st.markdown('#### User 2 | 用戶2')
-    st.markdown(f'{user_2_language}')
-    if st.button('🎙️', key='record2', help='Start recording | 開始錄音', use_container_width=True):
-        with st.spinner('Recording... 正在錄音...'):
-            wav_path = record_audio()
-        with st.spinner('Translating... 正在翻譯...'):
-            raw, translated = transcribe_and_translate(wav_path, user_2_language, user_1_language)
-        message = {'user': 'User 2', 'raw_text': raw, 'translated_text': translated}
-        st.session_state['messages'].append(message)
-        session.add(Message(
-            user='User 2',
-            raw_text=raw,
-            translated_text=translated,
-            source_language=user_2_language,
-            target_language=user_1_language
-        ))
-        session.commit()
-        os.remove(wav_path)
-        st.rerun()
+    start_rec = script_map[script]['start'] + script_map[script]['record']
+
+    with left_col:
+        st.markdown('#### User 1 | 用戶1')
+        st.markdown(f'{user_1_language}')
+        if st.button(label='🎙️', key='record1', help=f'Start recording | {start_rec}', use_container_width=True):
+            with st.spinner(f'Recording... 正在{script_map[script]["record"]}...'):
+                wav_path = record_audio()
+            with st.spinner(f'Translating... 正在{script_map[script]["translate"]}...'):
+                raw, translated = transcribe_and_translate(wav_path, user_1_language, user_2_language, 'transcribe')
+            message = {'user': 'User 1', 'raw_text': raw, 'translated_text': translated}
+            st.session_state['messages'].append(message)
+            session.add(Message(
+                user='User 1',
+                raw_text=raw,
+                translated_text=translated,
+                source_language=user_1_language,
+                target_language=user_2_language
+            ))
+            session.commit()
+            os.remove(wav_path)
+            st.rerun()
+
+    with right_col:
+        st.markdown('#### User 2 | 用戶2')
+        st.markdown(f'{user_2_language}')
+        if st.button('🎙️', key='record2', help=f'Start recording | {start_rec}', use_container_width=True):
+            with st.spinner(f'Recording... 正在{script_map[script]["record"]}...'):
+                wav_path = record_audio()
+            with st.spinner(f'Translating... 正在{script_map[script]["translate"]}...'):
+                raw, translated = transcribe_and_translate(wav_path, user_2_language, user_1_language, 'transcribe')
+            message = {'user': 'User 2', 'raw_text': raw, 'translated_text': translated}
+            st.session_state['messages'].append(message)
+            session.add(Message(
+                user='User 2',
+                raw_text=raw,
+                translated_text=translated,
+                source_language=user_2_language,
+                target_language=user_1_language
+            ))
+            session.commit()
+            os.remove(wav_path)
+            st.rerun()
+
+with tab2:
+    left_col, right_col = st.columns(2, border=True)
+
+    audio = script_map[script]['audio']
+
+    with left_col:
+        st.markdown('#### User 1 | 用戶1')
+        st.markdown(f'{user_1_language}')
+        audio_file_1 = st.file_uploader(f'User 1 Audio | 用戶1的{audio}', type=['.wav'], key='uploader1')
+        if st.button(label=f'Translate {script_map[script]["translate"]}', key='translate1-file') and audio_file_1:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+                tmp.write(audio_file_1.read())
+                tmp_path = tmp.name
+            with st.spinner(f'Translating... 正在{script_map[script]["translate"]}...'):
+                raw, translated = transcribe_and_translate(tmp_path, user_1_language, user_2_language, 'transcribe')
+            message = {'user': 'User 1', 'raw_text': raw, 'translated_text': translated}
+            st.session_state['messages'].append(message)
+            session.add(Message(
+                user='User 1',
+                raw_text=raw,
+                translated_text=translated,
+                source_language=user_1_language,
+                target_language=user_2_language
+            ))
+            session.commit()
+            os.remove(tmp_path)
+            st.rerun()
+
+    with right_col:
+        st.markdown('#### User 2 | 用戶2')
+        st.markdown(f'{user_2_language}')
+        audio_file_2 = st.file_uploader(f'User 2 Audio | 用戶2的{audio}', type=['.wav'], key='uploader2')
+        if st.button(label=f'Translate {script_map[script]["translate"]}', key='translate2-file') and audio_file_2:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp:
+                tmp.write(audio_file_2.read())
+                tmp_path = tmp.name
+            with st.spinner(f'Translating... 正在{script_map[script]["translate"]}...'):
+                raw, translated = transcribe_and_translate(tmp_path, user_2_language, user_1_language, 'transcribe')
+            message = {'user': 'User 2', 'raw_text': raw, 'translated_text': translated}
+            st.session_state['messages'].append(message)
+            session.add(Message(
+                user='User 2',
+                raw_text=raw,
+                translated_text=translated,
+                source_language=user_2_language,
+                target_language=user_1_language
+            ))
+            session.commit()
+            os.remove(tmp_path)
+            st.rerun()
+
+with tab3:
+    left_col, right_col = st.columns(2, border=True)
+
+    enter_text = script_map[script]['enter'] + '文字'
+
+    with left_col:
+        st.markdown('#### User 1 | 用戶1')
+        st.markdown(f'{user_1_language}')
+        text1 = st.text_input('User 1 text', placeholder=f'Enter text {enter_text}', label_visibility='collapsed')
+        if st.button(label=f'Translate {script_map[script]["translate"]}', key='translate1-text') and text1:
+            with st.spinner(f'Translating... 正在{script_map[script]["translate"]}...'):
+                raw, translated = transcribe_and_translate(text1, user_1_language, user_2_language, 'translate')
+            message = {'user': 'User 1', 'raw_text': raw, 'translated_text': translated}
+            st.session_state['messages'].append(message)
+            session.add(Message(
+                user='User 1',
+                raw_text=raw,
+                translated_text=translated,
+                source_language=user_1_language,
+                target_language=user_2_language
+            ))
+            session.commit()
+            st.rerun()
+
+    with right_col:
+        st.markdown('#### User 2 | 用戶2')
+        st.markdown(f'{user_2_language}')
+        text2 = st.text_input('User 2 text', placeholder=f'Enter text {enter_text}', label_visibility='collapsed')
+        if st.button(label=f'Translate {script_map[script]["translate"]}', key='translate2-text') and text2:
+            with st.spinner(f'Translating... 正在{script_map[script]["translate"]}...'):
+                raw, translated = transcribe_and_translate(text2, user_2_language, user_1_language, 'translate')
+            message = {'user': 'User 2', 'raw_text': raw, 'translated_text': translated}
+            st.session_state['messages'].append(message)
+            session.add(Message(
+                user='User 2',
+                raw_text=raw,
+                translated_text=translated,
+                source_language=user_2_language,
+                target_language=user_1_language
+            ))
+            session.commit()
+            st.rerun()
 
 st.markdown('---')
 
