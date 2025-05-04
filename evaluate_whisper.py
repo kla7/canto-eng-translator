@@ -34,6 +34,8 @@ def compute_english_wer(gold: str, predicted: str) -> float:
     :param predicted: The English predicted string.
     :return: The word error rate between the English gold and predicted strings.
     """
+    gold = gold.lower()
+    predicted = predicted.lower()
     return wer(gold, predicted)
 
 
