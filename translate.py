@@ -152,8 +152,6 @@ def transcribe_and_translate(input_str: str, source_language: str, target_langua
     if mode == 'transcribe':
         asr_model = whisper.load_model('medium').to(device)
 
-        print('prompt', script_map[script]['prompt'])
-
         transcription = asr_model.transcribe(
             audio=input_str,
             language='zh',
@@ -162,7 +160,6 @@ def transcribe_and_translate(input_str: str, source_language: str, target_langua
         )
 
         raw_text = transcription['text']
-        print(raw_text)
 
         del asr_model
         torch.cuda.empty_cache()
@@ -204,7 +201,6 @@ def transcribe_and_translate(input_str: str, source_language: str, target_langua
     )
 
     translated_text = response.choices[0].message.content.strip()
-    print(translated_text)
 
     return raw_text, translated_text
 
